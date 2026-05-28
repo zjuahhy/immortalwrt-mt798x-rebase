@@ -13,6 +13,7 @@
 
 #include <linux/netfilter_bridge.h>
 #include <linux/netfilter_ipv6.h>
+#include <linux/if_bridge.h>
 
 #include <net/arp.h>
 #include <net/neighbour.h>
@@ -1055,8 +1056,29 @@ static int hnat_get_hdr_protocol(struct sk_buff *skb, u16 *h_offset)
 	return h_proto;
 }
 
+static bool hnat_prot_3t_support(const struct hnat_prot_3t_cfg *prot_3t,
+				 u16 chk, u8 protocol)
+{
+	bool prot_chk = false;
+	int i;
+
+	if (!prot_3t)
+		return false;
+
+	for (i = 0; i < prot_3t->num; i++) {
+		if ((chk & BIT(i)) && protocol == prot_3t->proto[i]) {
+			prot_chk = true;
+			break;
+		}
+	}
+
+	/* whitelist: offload if matched; blacklist: offload if NOT matched */
+	return prot_3t->blist != prot_chk;
+}
+
 static unsigned int is_ppe_support_type(struct sk_buff *skb)
 {
+	struct hnat_prot_3t_cfg *prot_3t = NULL;
 	struct ethhdr *eth = NULL;
 	struct iphdr *iph = NULL;
 	struct ipv6hdr *ip6h = NULL;
@@ -1080,6 +1102,9 @@ static unsigned int is_ppe_support_type(struct sk_buff *skb)
 		}
 	}
 
+	if (skb_hnat_ppe(skb) < CFG_PPE_NUM)
+		prot_3t = &hnat_priv->prot_3t[skb_hnat_ppe(skb)];
+
 	h_proto = hnat_get_hdr_protocol(skb, &h_offset);
 
 	switch (h_proto) {
@@ -1100,6 +1125,11 @@ static unsigned int is_ppe_support_type(struct sk_buff *skb)
 			/* do not accelerate non tcp/udp traffic */
 			return 1;
 		}
+
+		/* check if protocol supported by PPE 3-tuple */
+		if (hnat_prot_3t_support(prot_3t, prot_3t->ipv4_chk,
+					 iph->protocol))
+			return 1;
 
 		break;
 	case ETH_P_IPV6:
@@ -1125,6 +1155,11 @@ static unsigned int is_ppe_support_type(struct sk_buff *skb)
 
 		}
 
+		/* check if protocol supported by PPE 3-tuple */
+		if (hnat_prot_3t_support(prot_3t, prot_3t->ipv6_chk,
+					 ip6h->nexthdr))
+			return 1;
+
 		break;
 	case ETH_P_8021Q:
 		return 1;
@@ -1135,6 +1170,26 @@ static unsigned int is_ppe_support_type(struct sk_buff *skb)
 	}
 
 	return 0;
+}
+
+static void mtk_hnat_update_acct_ifindex(struct sk_buff *skb,
+					 bool is_ingress)
+{
+	struct hnat_accounting *acct;
+	struct foe_entry *entry;
+
+	if (!skb->dev || netif_is_bridge_master(skb->dev))
+		return;
+
+	if (!skb_hnat_is_hashed(skb) || skb_hnat_ppe(skb) >= CFG_PPE_NUM)
+		return;
+
+	entry = &hnat_priv->foe_table_cpu[skb_hnat_ppe(skb)][skb_hnat_entry(skb)];
+	acct = &hnat_priv->acct[skb_hnat_ppe(skb)][skb_hnat_entry(skb)];
+
+	/* save iface index for virtual device counter update */
+	if (entry_hnat_is_bound(entry))
+		cmpxchg(is_ingress ? &acct->iif : &acct->oif, 0, skb->dev->ifindex);
 }
 
 static unsigned int
@@ -1187,6 +1242,11 @@ mtk_hnat_ipv6_nf_pre_routing(void *priv, struct sk_buff *skb,
 #endif
 	if (xlat_toggle)
 		mtk_464xlat_pre_process(skb);
+
+	/* save input iface index for virtual device counter update */
+	if (skb_hnat_reason(skb) == HIT_BIND_KEEPALIVE_DUP_OLD_HDR &&
+	    hnat_priv->data->per_flow_accounting)
+		mtk_hnat_update_acct_ifindex(skb, true);
 
 	return NF_ACCEPT;
 drop:
@@ -1276,6 +1336,11 @@ mtk_hnat_ipv4_nf_pre_routing(void *priv, struct sk_buff *skb,
 	if (xlat_toggle)
 		mtk_464xlat_pre_process(skb);
 
+	/* save input iface index for virtual device counter update */
+	if (skb_hnat_reason(skb) == HIT_BIND_KEEPALIVE_DUP_OLD_HDR &&
+	    hnat_priv->data->per_flow_accounting)
+		mtk_hnat_update_acct_ifindex(skb, true);
+
 	return NF_ACCEPT;
 drop:
 	if (skb && (debug_level >= 7))
@@ -1288,6 +1353,54 @@ drop:
 				   skb_hnat_alg(skb));
 
 	return NF_DROP;
+}
+
+/* Don't bind unknown-unicast (FDB miss) flows to the PPE — that would
+ * pin them to one egress port and break bridge MAC learning.
+ */
+static int hnat_bridge_flood_check(struct sk_buff *skb,
+				    const struct net_device *in)
+{
+	struct flow_offload_hw_path hw_path = {};
+	struct net_device *br_dev;
+	u16 vid = 0;
+
+	if (!netif_is_bridge_port(in))
+		return 0;
+
+	if (skb_hnat_alg(skb) || skb_hnat_reason(skb) != HIT_UNBIND_RATE_REACH)
+		return 0;
+
+	if (!is_unicast_ether_addr(eth_hdr(skb)->h_dest))
+		return 0;
+
+	br_dev = netdev_master_upper_dev_get_rcu((struct net_device *)in);
+	if (!br_dev || !br_dev->netdev_ops->ndo_flow_offload_check)
+		return 0;
+
+	if (br_vlan_enabled(br_dev)) {
+		if (skb_vlan_tag_present(skb))
+			vid = skb_vlan_tag_get_id(skb);
+		else
+			br_vlan_get_pvid_rcu(in, &vid);
+	}
+
+	hw_path.dev = br_dev;
+	hw_path.vlan_id = vid;
+	hw_path.flags |= BIT(DEV_PATH_ETHERNET);
+	ether_addr_copy(hw_path.eth_dest, eth_hdr(skb)->h_dest);
+
+	if (br_dev->netdev_ops->ndo_flow_offload_check(&hw_path) < 0) {
+		skb_hnat_alg(skb) = 1;
+
+		if (debug_level >= 7)
+			printk_ratelimited(KERN_WARNING
+					   "Bypass HNAT offload for %pM due to flooding check\n",
+					   eth_hdr(skb)->h_dest);
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 static unsigned int
@@ -1322,6 +1435,9 @@ mtk_hnat_br_nf_local_in(void *priv, struct sk_buff *skb,
 	    is_magic_tag_valid(skb) &&
 	    skb_hnat_iface(skb) == FOE_MAGIC_GE_VIRTUAL &&
 	    mtk_tnl_decap_offload && !mtk_tnl_decap_offload(skb))
+		return NF_ACCEPT;
+
+	if (hnat_bridge_flood_check(skb, state->in) < 0)
 		return NF_ACCEPT;
 
 	pre_routing_print(skb, state->in, state->out, __func__);
@@ -1372,6 +1488,12 @@ mtk_hnat_br_nf_local_in(void *priv, struct sk_buff *skb,
 			return NF_ACCEPT;
 	}
 #endif
+
+	/* save input iface index for virtual device counter update */
+	if (skb_hnat_reason(skb) == HIT_BIND_KEEPALIVE_DUP_OLD_HDR &&
+	    hnat_priv->data->per_flow_accounting)
+		mtk_hnat_update_acct_ifindex(skb, true);
+
 	return NF_ACCEPT;
 drop:
 	if (skb && (debug_level >= 7))
@@ -2049,7 +2171,7 @@ hnat_skip_fill_inner:
 	    skb_hnat_entry(skb) < hnat_priv->foe_etry_num &&
 	    skb_hnat_ppe(skb) < CFG_PPE_NUM)
 		memset(&hnat_priv->acct[skb_hnat_ppe(skb)][skb_hnat_entry(skb)],
-		       0, sizeof(struct mib_entry));
+		       0, sizeof(struct hnat_accounting));
 
 	return 0;
 }
@@ -2075,7 +2197,6 @@ static int skb_to_hnat_info(struct sk_buff *skb,
 	int gmac = NR_DISCARD;
 	int port_id = 0;
 	int mape = 0;
-	int udp = 0;
 	int ret;
 	u32 payload_len = 0;
 	u32 qid = 0;
@@ -2120,42 +2241,57 @@ static int skb_to_hnat_info(struct sk_buff *skb,
 	case ETH_P_IP:
 		iph = (struct iphdr *)(skb_network_header(skb) + h_offset);
 		/* Do not bind if pkt is fragmented */
-		if (ip_is_fragment(iph))
+		if (ip_is_fragment(iph) && !IS_IPV4_HNAT(&entry))
 			return -1;
 
-		switch (iph->protocol) {
-		case IPPROTO_UDP:
-			udp = 1;
-			fallthrough;
-		case IPPROTO_TCP:
-			entry.ipv4_hnapt.sp_tag = htons(ETH_P_IP);
+		if (IS_IPV4_GRP(&entry) || IS_IPV4_DSLITE(&entry) || IS_IPV4_MAPE(&entry)) {
+			entry.ipv4_hnapt.sip = foe->ipv4_hnapt.sip;
+			entry.ipv4_hnapt.dip = foe->ipv4_hnapt.dip;
+			entry.ipv4_hnapt.sport = foe->ipv4_hnapt.sport;
+			entry.ipv4_hnapt.dport = foe->ipv4_hnapt.dport;
 
-			/* DS-Lite WAN->LAN */
-			if (IS_IPV4_DSLITE(&entry) || IS_IPV4_MAPE(&entry)) {
-				entry.ipv4_dslite.sip = foe->ipv4_dslite.sip;
-				entry.ipv4_dslite.dip = foe->ipv4_dslite.dip;
-				entry.ipv4_dslite.sport =
-					foe->ipv4_dslite.sport;
-				entry.ipv4_dslite.dport =
-					foe->ipv4_dslite.dport;
+			if (IS_IPV4_GRP(&entry)) {
+				entry.ipv4_hnapt.sp_tag = htons(ETH_P_IP);
+
+				entry.ipv4_hnapt.iblk2.dscp = iph->tos;
+				if (hnat_priv->data->per_flow_accounting)
+					entry.ipv4_hnapt.iblk2.mibf = 1;
+
+				entry.ipv4_hnapt.vlan1 = hw_path->vlan_id;
+				if (skb_vlan_tagged(skb)) {
+					entry.bfib1.vlan_layer += 1;
+
+					if (entry.ipv4_hnapt.vlan1)
+						entry.ipv4_hnapt.vlan2 =
+							skb->vlan_tci;
+					else
+						entry.ipv4_hnapt.vlan1 =
+							skb->vlan_tci;
+				}
+
+				entry.ipv4_hnapt.new_sip = ntohl(iph->saddr);
+				entry.ipv4_hnapt.new_dip = ntohl(iph->daddr);
+
+#if defined(CONFIG_MEDIATEK_NETSYS_V3)
+				entry.ipv4_hnapt.eg_keep_ecn = 1;
+				entry.ipv4_hnapt.eg_keep_dscp = 1;
+#endif
+
+				if (IS_IPV4_HNAT(&entry)) {
+					/* 3-tuple offload only allows bridge forward */
+					if (!hnat_is_hw_path_bridging(hw_path))
+						return -1;
+					break;
+				}
+			} else {
+				entry.ipv4_dslite.sp_tag = htons(ETH_P_IP);
 
 #if defined(CONFIG_MEDIATEK_NETSYS_V2) || defined(CONFIG_MEDIATEK_NETSYS_V3)
 				if (IS_IPV4_MAPE(&entry)) {
-					pptr = skb_header_pointer(skb,
-								  iph->ihl * 4 + h_offset,
-								  sizeof(_ports),
-								  &_ports);
-					if (unlikely(!pptr))
-						return -1;
-
 					entry.ipv4_mape.new_sip =
 							ntohl(iph->saddr);
 					entry.ipv4_mape.new_dip =
 							ntohl(iph->daddr);
-					entry.ipv4_mape.new_sport =
-							ntohs(pptr->src);
-					entry.ipv4_mape.new_dport =
-							ntohs(pptr->dst);
 				}
 #endif
 
@@ -2187,55 +2323,33 @@ static int skb_to_hnat_info(struct sk_buff *skb,
 				entry.ipv4_dslite.eg_keep_ecn = 1;
 				entry.ipv4_dslite.eg_keep_cls = 1;
 #endif
+			}
+		} else if (!IS_IPV6_6RD(&entry)) {
+			return -1;
+		}
 
-			} else if (IS_IPV4_GRP(&entry)) {
-				entry.ipv4_hnapt.iblk2.dscp = iph->tos;
-				if (hnat_priv->data->per_flow_accounting)
-					entry.ipv4_hnapt.iblk2.mibf = 1;
-
-				entry.ipv4_hnapt.vlan1 = hw_path->vlan_id;
-
-				if (skb_vlan_tagged(skb)) {
-					entry.bfib1.vlan_layer += 1;
-
-					if (entry.ipv4_hnapt.vlan1)
-						entry.ipv4_hnapt.vlan2 =
-							skb->vlan_tci;
-					else
-						entry.ipv4_hnapt.vlan1 =
-							skb->vlan_tci;
-				}
-
-				entry.ipv4_hnapt.sip = foe->ipv4_hnapt.sip;
-				entry.ipv4_hnapt.dip = foe->ipv4_hnapt.dip;
-				entry.ipv4_hnapt.sport = foe->ipv4_hnapt.sport;
-				entry.ipv4_hnapt.dport = foe->ipv4_hnapt.dport;
-
-				entry.ipv4_hnapt.new_sip = ntohl(iph->saddr);
-				entry.ipv4_hnapt.new_dip = ntohl(iph->daddr);
-
-				if (IS_IPV4_HNAPT(&entry)) {
-					pptr = skb_header_pointer(skb, iph->ihl * 4 + h_offset,
-								sizeof(_ports),
-								&_ports);
-					if (unlikely(!pptr))
-						return -1;
-
-					entry.ipv4_hnapt.new_sport = ntohs(pptr->src);
-					entry.ipv4_hnapt.new_dport = ntohs(pptr->dst);
-				}
-
-#if defined(CONFIG_MEDIATEK_NETSYS_V3)
-				entry.ipv4_hnapt.eg_keep_ecn = 1;
-				entry.ipv4_hnapt.eg_keep_dscp = 1;
-#endif
-			} else {
+		switch (iph->protocol) {
+		case IPPROTO_UDP:
+			entry.bfib1.udp = 1;
+			fallthrough;
+		case IPPROTO_TCP:
+			pptr = skb_header_pointer(skb,
+						  iph->ihl * 4 + h_offset,
+						  sizeof(_ports),
+						  &_ports);
+			if (unlikely(!pptr))
 				return -1;
+
+			/* DS-Lite WAN->LAN */
+			if (IS_IPV4_MAPE(&entry)) {
+				entry.ipv4_mape.new_sport = ntohs(pptr->src);
+				entry.ipv4_mape.new_dport = ntohs(pptr->dst);
+			} else if (IS_IPV4_HNAPT(&entry)) {
+				entry.ipv4_hnapt.new_sport = ntohs(pptr->src);
+				entry.ipv4_hnapt.new_dport = ntohs(pptr->dst);
 			}
 
-			entry.bfib1.udp = udp;
 			break;
-
 		case IPPROTO_IPV6:
 			/* 6RD LAN->WAN(6to4) */
 			if (entry.bfib1.pkt_type == IPV6_6RD) {
@@ -2286,11 +2400,8 @@ static int skb_to_hnat_info(struct sk_buff *skb,
 
 	case ETH_P_IPV6:
 		ip6h = (struct ipv6hdr *)(skb_network_header(skb) + h_offset);
-		switch (ip6h->nexthdr) {
-		case NEXTHDR_UDP:
-			udp = 1;
-			fallthrough;
-		case NEXTHDR_TCP: /* IPv6-5T or IPv6-3T */
+
+		if (IS_IPV6_3T_ROUTE(&entry) || IS_IPV6_5T_ROUTE(&entry) || IS_IPV6_6RD(&entry)) {
 			entry.ipv6_5t_route.sp_tag = htons(ETH_P_IPV6);
 
 			entry.ipv6_5t_route.vlan1 = hw_path->vlan_id;
@@ -2308,7 +2419,6 @@ static int skb_to_hnat_info(struct sk_buff *skb,
 
 			if (hnat_priv->data->per_flow_accounting)
 				entry.ipv6_5t_route.iblk2.mibf = 1;
-			entry.bfib1.udp = udp;
 
 			if (IS_IPV6_6RD(&entry)) {
 				entry.bfib1.rmt = 1;
@@ -2336,25 +2446,33 @@ static int skb_to_hnat_info(struct sk_buff *skb,
 			entry.ipv6_3t_route.ipv6_dip3 =
 				foe->ipv6_3t_route.ipv6_dip3;
 
+			entry.ipv6_5t_route.sport =
+				foe->ipv6_5t_route.sport;
+			entry.ipv6_5t_route.dport =
+				foe->ipv6_5t_route.dport;
+
 #if defined(CONFIG_MEDIATEK_NETSYS_V3)
 			entry.ipv6_3t_route.eg_keep_ecn = 1;
 			entry.ipv6_3t_route.eg_keep_cls = 1;
 #endif
 
-			if (IS_IPV6_3T_ROUTE(&entry)) {
-				entry.ipv6_3t_route.prot =
-					foe->ipv6_3t_route.prot;
-				entry.ipv6_3t_route.hph =
-					foe->ipv6_3t_route.hph;
-			} else if (IS_IPV6_5T_ROUTE(&entry) || IS_IPV6_6RD(&entry)) {
-				entry.ipv6_5t_route.sport =
-					foe->ipv6_5t_route.sport;
-				entry.ipv6_5t_route.dport =
-					foe->ipv6_5t_route.dport;
-			} else {
-				return -1;
-			}
+			entry.ipv6_5t_route.iblk2.dscp =
+				(ip6h->priority << 4 |
+				 (ip6h->flow_lbl[0] >> 4));
 
+			if (IS_IPV6_3T_ROUTE(&entry)) {
+				/* 3-tuple offload only allows bridge forward */
+				if (!hnat_is_hw_path_bridging(hw_path))
+					return -1;
+				break;
+			}
+		}
+
+		switch (ip6h->nexthdr) {
+		case NEXTHDR_UDP:
+			entry.bfib1.udp = 1;
+			fallthrough;
+		case NEXTHDR_TCP: /* IPv6-5T */
 			if (IS_IPV6_5T_ROUTE(&entry) &&
 			    (!hnat_ipv6_addr_equal(&entry.ipv6_5t_route.ipv6_sip0, &ip6h->saddr) ||
 			     !hnat_ipv6_addr_equal(&entry.ipv6_5t_route.ipv6_dip0, &ip6h->daddr))) {
@@ -2397,10 +2515,6 @@ static int skb_to_hnat_info(struct sk_buff *skb,
 				return -1;
 #endif
 			}
-
-			entry.ipv6_5t_route.iblk2.dscp =
-				(ip6h->priority << 4 |
-				 (ip6h->flow_lbl[0] >> 4));
 			break;
 
 		case NEXTHDR_IPIP:
@@ -3810,9 +3924,13 @@ static unsigned int mtk_hnat_nf_post_routing(
 		skb_to_hnat_info(skb, out, entry, &hw_path);
 		break;
 	case HIT_BIND_KEEPALIVE_DUP_OLD_HDR:
-		/* update hnat count to nf_conntrack by keepalive */
-		if (hnat_priv->data->per_flow_accounting && hnat_priv->nf_stat_en)
+		/* update hnat count to virtual interface/nf_conntrack by keepalive */
+		if (hnat_priv->data->per_flow_accounting) {
+			/* save output iface index for virtual device counter update */
+			mtk_hnat_update_acct_ifindex(skb, false);
+
 			hnat_get_count(hnat_priv, skb_hnat_ppe(skb), skb_hnat_entry(skb), NULL);
+		}
 
 		if (fn && !mtk_hnat_accel_type(skb))
 			break;

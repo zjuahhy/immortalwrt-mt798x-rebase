@@ -6,7 +6,7 @@ This repository is worked on ImmortalWrt with MTK OpenWrt Feeds patches imported
 
 ## Commit Cutoff Revisions
 
-### ImmortalWrt: [1cc0390](https://github.com/immortalwrt/immortalwrt/commit/1cc0390ddf5453691059dc4d21e8d1ca3277e023) - OpenWrt 25.12.1
+### ImmortalWrt: [e660cbc](https://github.com/immortalwrt/immortalwrt/commit/e660cbc917924389164967211777106020b3cd56) - OpenWrt 25.12.4
 
 ```
 Merge Official Source
@@ -14,29 +14,21 @@ Merge Official Source
 Signed-off-by: Tianling Shen <cnsztl@immortalwrt.org>
 ```
 
-### MTK OpenWrt Feeds: [2459584](https://git01.mediatek.com/plugins/gitiles/openwrt/feeds/mtk-openwrt-feeds/+/24595844f63aebb6ccb9bcd28d9690dbfc541a46)
+### MTK OpenWrt Feeds: [9372bc8](https://git01.mediatek.com/plugins/gitiles/openwrt/feeds/mtk-openwrt-feeds/+/9372bc8b1266463da068e5e9a59136d91fd004fb)
 
 ```
-[][MAC80211][kernel-6.12][wed][Refactor wed msdu page ring init for next generation wifi chip compatible]
+[][openwrt-25][common][bsp][Add the extra_firmware variable to facilitate appending built-in firmware names in other rules scripts]
 
 [Description]
-Refactor wed msdu page ring init for next generation wifi chip compatible
-and add mt76 patch for mp4.3 build pass
+Add the extra_firmware variable to facilitate appending built-in
+firmware names in other rules scripts.
 
-[Root Cause]
+[Release-log]
 N/A
 
-[Solution]
-N/A
 
-[How to Verify]
-N/A
-
-[Info to Customer]
-N/A
-
-Change-Id: I65784a91c8657b65e0b7ab4961c3a7da8a7cab50
-Reviewed-on: https://gerrit.mediatek.inc/c/openwrt/feeds/mtk_openwrt_feeds/+/11890197
+Change-Id: Ie471c6e3fcf85103ade3d547efdb34ad117e5d77
+Reviewed-on: https://gerrit.mediatek.inc/c/openwrt/feeds/mtk_openwrt_feeds/+/12086920
 ```
 
 ### l1parser: [081bb31](https://github.com/chasey-dev/l1parser/commit/081bb31211efc74594d25bfd1bb5811f3408a205)
