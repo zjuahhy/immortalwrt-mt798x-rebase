@@ -6,7 +6,7 @@ This repository is worked on ImmortalWrt with MTK OpenWrt Feeds patches imported
 
 ## Commit Cutoff Revisions
 
-### ImmortalWrt: [c479494](https://github.com/immortalwrt/immortalwrt/commit/c479494ab2e5a89ac31498fe02d11987e30cba89) - OpenWrt 25.12 SNAPSHOT
+### ImmortalWrt: [e660cbc](https://github.com/immortalwrt/immortalwrt/commit/e660cbc917924389164967211777106020b3cd56) - OpenWrt 25.12.4
 
 ```
 Merge Official Source
@@ -14,23 +14,21 @@ Merge Official Source
 Signed-off-by: Tianling Shen <cnsztl@immortalwrt.org>
 ```
 
-### MTK OpenWrt Feeds: [35490ce](https://git01.mediatek.com/plugins/gitiles/openwrt/feeds/mtk-openwrt-feeds/+/35490cec6a2e5982532935fb0a1c884f7c4efdb0)
+### MTK OpenWrt Feeds: [9372bc8](https://git01.mediatek.com/plugins/gitiles/openwrt/feeds/mtk-openwrt-feeds/+/9372bc8b1266463da068e5e9a59136d91fd004fb)
 
 ```
-[][HIGH][kernel/kernel-6.12][common][eth][Add HW LRO VLAN support including switch SP tag]
+[][openwrt-25][common][bsp][Add the extra_firmware variable to facilitate appending built-in firmware names in other rules scripts]
 
 [Description]
-Add HW LRO max 4-depth VLAN support including switch special tag.
-
-Without this patch, the LRO hardware cannot properly parse VLAN tags
-and switch special tags, causing HW learning and offlaod to fail.
+Add the extra_firmware variable to facilitate appending built-in
+firmware names in other rules scripts.
 
 [Release-log]
 N/A
 
 
-Change-Id: I6ee91c88ac1dfd1c777607087941fdd4aed99ce1
-Reviewed-on: https://gerrit.mediatek.inc/c/openwrt/feeds/mtk_openwrt_feeds/+/12022549
+Change-Id: Ie471c6e3fcf85103ade3d547efdb34ad117e5d77
+Reviewed-on: https://gerrit.mediatek.inc/c/openwrt/feeds/mtk_openwrt_feeds/+/12086920
 ```
 
 ### l1parser: [081bb31](https://github.com/chasey-dev/l1parser/commit/081bb31211efc74594d25bfd1bb5811f3408a205)

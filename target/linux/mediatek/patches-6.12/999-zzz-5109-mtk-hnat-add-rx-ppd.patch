@@ -51,7 +51,17 @@
  		       u16 eth_proto, int mape);
 --- a/drivers/net/ethernet/mediatek/mtk_hnat/hnat.c
 +++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat.c
-@@ -1568,6 +1568,13 @@ static int hnat_probe(struct platform_de
+@@ -1377,6 +1377,9 @@ static void hnat_release_netdev(void)
+ 
+ 	if (hnat_priv->g_wandev)
+ 		dev_put(hnat_priv->g_wandev);
++
++	if (g_rx_ppdev)
++		dev_put(g_rx_ppdev);
+ }
+ 
+ static struct notifier_block nf_hnat_netdevice_nb __read_mostly = {
+@@ -1565,6 +1568,13 @@ static int hnat_probe(struct platform_de
  		strncpy(hnat_priv->ppd, (char *)name, IFNAMSIZ - 1);
  	dev_info(&pdev->dev, "ppd = %s\n", hnat_priv->ppd);
  
