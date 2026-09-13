@@ -1768,6 +1768,15 @@ define Device/iodata_wn-ax2033gr
 endef
 TARGET_DEVICES += iodata_wn-ax2033gr
 
+define Device/iodata_wn-ax2033gr2
+  $(Device/iodata_nand)
+  DEVICE_MODEL := WN-AX2033GR2
+  KERNEL_INITRAMFS := $(KERNEL_DTB) | loader-kernel | lzma | \
+	uImage lzma -M 0x434f4d42 -n '3.10(XBH.0)b50' | iodata-mstc-header
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615-firmware -uboot-envtools
+endef
+TARGET_DEVICES += iodata_wn-ax2033gr2
+
 define Device/iodata_wn-deax1800gr
   $(Device/dsa-migration)
   DEVICE_VENDOR := I-O DATA
@@ -3043,6 +3052,18 @@ define Device/tplink_ec330-g5u-v1
 	append-ubi | check-size
 endef
 TARGET_DEVICES += tplink_ec330-g5u-v1
+
+define Device/tplink_er605-v1
+  DEVICE_VENDOR := TP-Link
+  DEVICE_MODEL := ER605
+  DEVICE_VARIANT := v1
+  DEVICE_ALT0_VENDOR := TP-Link
+  DEVICE_ALT0_MODEL := TL-R605
+  DEVICE_ALT0_VARIANT := v1
+  DEVICE_PACKAGES := -wpad-basic-mbedtls -uboot-envtools
+  IMAGE_SIZE := 13760k
+endef
+TARGET_DEVICES += tplink_er605-v1
 
 define Device/tplink_er605-v2
   $(Device/nand)

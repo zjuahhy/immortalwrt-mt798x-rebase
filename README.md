@@ -6,43 +6,32 @@ This repository is worked on ImmortalWrt with MTK OpenWrt Feeds patches imported
 
 ## Commit Cutoff Revisions
 
-### ImmortalWrt: [e04af5b](https://github.com/immortalwrt/immortalwrt/commit/e04af5bf78280429e9dc2c8602982416bd862076)
+### ImmortalWrt: [1d34e7b](https://github.com/immortalwrt/immortalwrt/commit/1d34e7b88708d4eeb3feabe0b2b6f835a909c9c0)
 
 ```
-kernel: refresh patches
+mediatek: fix merge conflict
 
-Fixes: 697d67e8a4ce ("Merge Official Source")
+Fixes: #2458
+
+Fixes: 3a0e732472ba ("Merge Official Source")
 Signed-off-by: Tianling Shen <cnsztl@immortalwrt.org>
 ```
 
-### MTK OpenWrt Feeds: [8b882e5](https://git01.mediatek.com/plugins/gitiles/openwrt/feeds/mtk-openwrt-feeds/+/8b882e59cf7123f3138153e5db7a18873dee6f71)
+### MTK OpenWrt Feeds: [511100a](https://github.com/mediatek/mtk-openwrt-feeds/commit/511100a886cf99a12588ccbb810c70928a772027)
 
 ```
-[][kernel-6.12][common][eth][Fix the issue where the esw_cnt debug command cannot read the MIB]
+[openwrt-25.12][mt7988][npu][Enable NPU L4S in autobuild defconfig]
 
 [Description]
-Fix the issue where the esw_cnt debug command cannot read the MIB.
-
-[Root Cause]
-Both the GDM and MT753x counters are cleared each time the kernel
-executes mtk_esw_cnt_read(). However, when running the cat esw_cnt
-debug command, the kernel may invoke mtk_esw_cnt_read() multiple times,
-not just once. As a result, GDM and MT753x counter data may be lost
-during the execution of the esw_cnt debug command.
-
-[Solution]
-We save the GDM counters in mtk_esw_cnt_open() and move the Switch
-counters clear to mtk_esw_cnt_release().
-
-[How to Verify]
-N/A
+Enable NPU package and L4S support in mt798x_rfb autobuild defconfig:
+1. Add CONFIG_PACKAGE_kmod-npu=y
+2. Add CONFIG_MTK_NPU_L4S=y
+for both mt7992 and mt7996 25.12 profiles.
 
 [Info to Customer]
 N/A
 
-
-Change-Id: Idb28da45ee92f07ad64ad00206388e0ac06c9f19
-Reviewed-on: https://gerrit.mediatek.inc/c/openwrt/feeds/mtk_openwrt_feeds/+/12183429
+Change-Id: I124b7f93a7c068ac87cd35343039470276baaf5e
 ```
 
 ### l1parser: [081bb31](https://github.com/chasey-dev/l1parser/commit/081bb31211efc74594d25bfd1bb5811f3408a205)
